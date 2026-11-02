@@ -187,6 +187,8 @@ there once and reaches every caller at its next re-arm; a watcher
 process already sleeping keeps its interval until it exits.
 
 Prefer the **watcher** for checks that need no model call while quiet.
+The watcher responds to peer handoff entries; it does not monitor delegated
+workers or wake the agent that started them when they finish.
 It reads new fields after your cursor and wakes once for a peer's
 `Ball:` naming you or `none`, or a nonempty `Ask:` addressed to you.
 An Ask uses the entry header's recipient or an explicit leading
