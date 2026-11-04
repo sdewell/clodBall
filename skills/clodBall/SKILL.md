@@ -135,6 +135,12 @@ Re: <timestamp of the entry this answers>
 
 ## The check (what one timer tick does)
 
+For a Codex launcher callback, first run the supplied `ack started` command
+with that callback's run directory. After successfully handling the snapshot
+and saving its cursor, run `ack handled` for the same directory before
+re-arming. On failure, leave `handled` absent and preserve the previous cursor.
+These receipts record the check's progress; they do not close handoff requests.
+
 1. Copy the shared file to a session-owned scratch snapshot before reading.
    Record its complete line count with `wc -l`. Read **every** unread entry
    in that snapshot, including an entry that crosses the previous cursor
@@ -248,13 +254,22 @@ would wake again on the same entry. Keep that delay cancellable by stop.
   and use a state directory owned by this session, with no overlapping
   launch. The launcher uses the watcher's default interval, validates
   its wake, queues exactly one check, validates Codex's confirmation,
-  then exits. `phase.txt` retains the last recorded phase: `watching`,
-  `queuing`, `queued`, `invalid-arguments`, `watcher-failed`,
-  `invalid-wake-output`, `queue-failed`, or `queue-outcome-uncertain`.
-  `wake.out`, `wake.err`, `queue.out`, and `queue.err` hold the
-  latest launch's output. `queue-outcome-uncertain` means inspect the
-  receipt before retrying: the check may already be queued.
+  then monitors for `started` for up to five minutes without a model call.
+  A missing acknowledgement produces `alert.txt` and a terminal warning;
+  it never resends. A busy thread can exceed this window without a stall.
+  `current-run.txt` names the latest directory under `runs/`; each run
+  preserves timestamped queue, start, and handled receipts and diagnostics.
+  The root `phase.txt`, `wake.out`, `wake.err`, `queue.out`, and `queue.err`
+  show the latest launch. Inspect old runs directly or pass their directories
+  to `scripts/clodball-status`. `queue-outcome-uncertain` means inspect
+  the receipt before retrying: the check may already be queued.
+  The callback supplies `scripts/clodball-codex ack started|handled <run-dir>`
+  commands. Use its exact run directory, even after a later launch.
+  `CLODBALL_ACK_TIMEOUT` overrides the five-minute window in seconds.
   The queued check reads a new snapshot and re-arms with its cursor.
+  Re-arm with `tmux respawn-window -k` targeting only the owned window;
+  this replaces any monitor still sleeping after `started`. Never send
+  a launch command as keystrokes to a pane that may still be running.
   Do not re-arm in an autonomous shell loop: delivery is not a completed
   read. On failure, preserve the cursor and report the failure. A Codex
   scheduling tool, if exposed, is an acceptable substitute at the
@@ -265,8 +280,9 @@ would wake again on the same entry. Keep that delay cancellable by stop.
   snapshot and numeric cursor before launching the watcher.
 - Known limit of the `codex queue` route: the queued check runs only
   when the Codex thread is idle. While Codex is in a long work turn its
-  tick is delayed until the turn yields. A delayed tick is not a dead
-  timer; a tick that never runs after the thread yields is.
+  tick is delayed until the turn yields. A queue receipt proves acceptance,
+  not that a check started or completed. A missing acknowledgement flags
+  that observation gap; it does not establish why the check did not run.
 
 ## Ending: the goal decides, both agents confirm
 

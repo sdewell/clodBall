@@ -1,7 +1,10 @@
 #!/bin/sh
 # Queue one check after the packaged watcher wakes; the completed check re-arms.
 # Usage: clodball-codex <thread-uuid> <absolute-handoff> <saved-cursor> <absolute-state-dir>
+#        clodball-codex ack <started|handled> <absolute-run-dir>
 # The caller owns the state directory and prevents overlapping launches.
+# CLODBALL_ACK_TIMEOUT sets the start acknowledgement timeout in seconds (default 300).
+# A timeout records an alert; it never queues again or changes queue success to failure.
 # Exit 2 means invalid arguments or an unverified receipt; child failures retain their status.
 set -eu
 
@@ -17,13 +20,55 @@ $1
 EOF
 }
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+if [ "${1:-}" = ack ]; then
+  [ "$#" -eq 3 ] || die 'supply ack, started or handled, and an absolute run directory'
+  acknowledgement=$2
+  run_dir=$3
+  case "$acknowledgement" in started|handled) ;; *) die 'acknowledgement must be started or handled' ;; esac
+  case "$run_dir" in /*) ;; *) die 'run directory must be absolute' ;; esac
+  [ -r "$run_dir/run-path.txt" ] || die 'unknown launch run'
+  IFS= read -r recorded_run < "$run_dir/run-path.txt" || die 'unreadable launch identity'
+  [ "$recorded_run" = "$run_dir" ] || die 'run directory does not match its recorded identity'
+  [ -s "$run_dir/queue-requested-at.txt" ] || die 'launch has not attempted to queue a check'
+  if [ "$acknowledgement" = handled ]; then
+    [ -s "$run_dir/started-at.txt" ] || die 'record started before handled'
+  fi
+  target="$run_dir/$acknowledgement-at.txt"
+  if [ ! -s "$target" ]; then
+    stamp=$(mktemp "$run_dir/ack.XXXXXXXX")
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$stamp"
+    # Linking publishes a complete first receipt without replacing an earlier one.
+    if ! ln "$stamp" "$target" 2>/dev/null; then
+      rm -f "$stamp"
+      [ -s "$target" ] || die 'could not record acknowledgement'
+    else
+      rm -f "$stamp"
+    fi
+  fi
+  exit 0
+fi
+
 [ "$#" -eq 4 ] || die 'supply thread UUID, absolute handoff path, saved cursor, and absolute state directory'
 thread=$1
 handoff=$2
 cursor=$3
 state_dir=$4
 case "$state_dir" in /*) ;; *) die 'state directory must be absolute' ;; esac
-mkdir -p "$state_dir"
+mkdir -p "$state_dir/runs"
+run_dir=$(mktemp -d "$state_dir/runs/run.XXXXXXXX")
+date -u +%Y-%m-%dT%H:%M:%SZ > "$run_dir/created-at.txt"
+printf '%s\n' "$run_dir" > "$run_dir/run-path.txt"
+printf '%s\n' "$run_dir" > "$state_dir/current-run.txt"
+# These paths remain the latest-launch view; the run itself is never reused.
+for file in phase.txt wake.out wake.err queue.out queue.err expected-wake.txt expected-queue.txt; do
+  rm -f "$state_dir/$file"
+  ln -s "$run_dir/$file" "$state_dir/$file"
+done
+state_dir=$run_dir
 : > "$state_dir/wake.out"
 : > "$state_dir/wake.err"
 : > "$state_dir/queue.out"
@@ -34,6 +79,8 @@ is_uuid "$thread" || die 'thread must be a UUID'
 thread=$(printf '%s' "$thread" | tr '[:upper:]' '[:lower:]')
 case "$handoff" in /*) ;; *) die 'handoff path must be absolute' ;; esac
 case "$cursor" in ''|*[!0-9]*) die 'saved cursor must be a nonnegative integer' ;; esac
+ack_timeout=${CLODBALL_ACK_TIMEOUT:-300}
+case "$ack_timeout" in ''|*[!0-9]*) die 'acknowledgement timeout must be a nonnegative integer' ;; esac
 scripts=$(cd -- "$(dirname -- "$0")" && pwd -P)
 printf '%s\n' watching > "$state_dir/phase.txt"
 if "$scripts/clodball-watch" cx "$handoff" "$cursor" > "$state_dir/wake.out" 2> "$state_dir/wake.err"; then
@@ -51,7 +98,13 @@ if ! cmp -s "$state_dir/expected-wake.txt" "$state_dir/wake.out"; then
   exit 2
 fi
 printf '%s\n' queuing > "$state_dir/phase.txt"
-if codex queue --thread "$thread" --message "\$clodBall check: new entry in $handoff" > "$state_dir/queue.out" 2> "$state_dir/queue.err"; then
+date -u +%Y-%m-%dT%H:%M:%SZ > "$state_dir/queue-requested-at.txt"
+quoted_launcher=$(shell_quote "$scripts/clodball-codex")
+quoted_run=$(shell_quote "$run_dir")
+message="\$clodBall check: new entry in $handoff
+Before reading the snapshot, run: $quoted_launcher ack started $quoted_run
+After successfully handling the snapshot and saving its cursor, before re-arming, run: $quoted_launcher ack handled $quoted_run"
+if codex queue --thread "$thread" --message "$message" > "$state_dir/queue.out" 2> "$state_dir/queue.err"; then
   :
 else
   result=$?
@@ -76,3 +129,18 @@ if [ "$queue_valid" -ne 1 ]; then
   exit 2
 fi
 printf '%s\n' queued > "$state_dir/phase.txt"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$state_dir/queued-at.txt"
+deadline=$(($(date +%s) + ack_timeout))
+while [ ! -s "$state_dir/started-at.txt" ]; do
+  remaining=$((deadline - $(date +%s)))
+  if [ "$remaining" -le 0 ]; then
+    # Re-read at the deadline: an acknowledgement may have arrived during the poll.
+    [ ! -s "$state_dir/started-at.txt" ] || break
+    printf '%s no started acknowledgement observed within %s seconds; the thread may still be busy\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ack_timeout" > "$state_dir/alert.txt"
+    printf 'clodball-codex: %s; see %s\n' "$(cat "$state_dir/alert.txt")" "$state_dir" >&2
+    break
+  fi
+  [ "$remaining" -le 30 ] || remaining=30
+  sleep "$remaining"
+done

@@ -159,6 +159,34 @@ uncertain() {
   echo 'ok: an uncertain queue outcome points at queue.out'
 }
 
+acknowledgements() {
+  fixture acknowledgements
+  run_dir="$state_dir/runs/run.first"
+  mkdir -p "$run_dir"
+  printf '%s\n' "$run_dir" > "$state_dir/current-run.txt"
+  printf '%s\n' "$run_dir" > "$run_dir/run-path.txt"
+  printf 'queued\n' > "$run_dir/phase.txt"
+  printf '2026-03-01T12:00:00Z\n' > "$run_dir/queued-at.txt"
+  printf '2026-03-01T12:05:00Z no started acknowledgement observed within 300 seconds; the thread may still be busy\n' > "$run_dir/alert.txt"
+  run_status "$handoff" "$state_dir"
+  has "  run: $run_dir"
+  has '  queued at: 2026-03-01T12:00:00Z'
+  has '  started acknowledgement: not recorded'
+  has '  handled acknowledgement: not recorded'
+  has '  alert: 2026-03-01T12:05:00Z no started acknowledgement observed within 300 seconds; the thread may still be busy'
+  printf '2026-03-01T12:10:00Z\n' > "$run_dir/started-at.txt"
+  printf '2026-03-01T12:11:00Z\n' > "$run_dir/handled-at.txt"
+  find "$case_dir/world" -type f -exec cksum {} + | sort > "$case_dir/before"
+  run_status "$handoff" "$run_dir"
+  has '  started acknowledgement: 2026-03-01T12:10:00Z'
+  has '  handled acknowledgement: 2026-03-01T12:11:00Z'
+  has '  alert: 2026-03-01T12:05:00Z no started acknowledgement observed within 300 seconds; the thread may still be busy'
+  find "$case_dir/world" -type f -exec cksum {} + | sort > "$case_dir/after"
+  cmp -s "$case_dir/before" "$case_dir/after" || fail 'acknowledgement status changed state'
+  [ ! -e "$marker" ] || fail 'acknowledgement status called codex'
+  echo 'ok: current and archived runs show explicit acknowledgements and preserve historical alerts without writing or queueing'
+}
+
 missing_evidence() {
   fixture missing
   rm "$handoff"
@@ -246,10 +274,11 @@ case "${1:-all}" in
   ps-failed) ps_failed ;;
   queued) queued ;;
   uncertain) uncertain ;;
+  acknowledgements) acknowledgements ;;
   missing) missing_evidence ;;
   requests) requests ;;
   read-only) read_only ;;
   bad-args) bad_args ;;
-  all) live; duplicate; stale; live_launcher; ps_failed; queued; uncertain; missing_evidence; requests; read_only; bad_args ;;
+  all) live; duplicate; stale; live_launcher; ps_failed; queued; uncertain; acknowledgements; missing_evidence; requests; read_only; bad_args ;;
   *) fail "unknown test: $1" ;;
 esac

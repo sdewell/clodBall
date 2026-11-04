@@ -4,10 +4,10 @@
 # Usage: clodball-status <absolute handoff path> [<absolute launcher state dir> ...]
 #
 # Reads the handoff file, the process list, the skill files, and each state
-# directory's phase.txt and queue.out. It writes no file, starts no watcher,
-# and never calls codex or tmux. It reports facts only: it does not say that
-# an entry was read, delivered, answered, or resolved, because files cannot
-# show that. Exit 2 means invalid arguments; anything else exits 0.
+# directory's phase.txt, queue.out, and explicit acknowledgement receipts. It writes no file, starts no watcher,
+# and never calls codex or tmux. It reports receipts as client assertions,
+# not independent proof an entry was read, delivered, answered, or resolved.
+# Exit 2 means invalid arguments; anything else exits 0.
 set -u
 
 die() {
@@ -131,15 +131,34 @@ entries=
 { printf '%s\n' "$@"; printf '%s\n' "$launchers" | awk -F'\t' '$4 != "" { print $4 }'; } |
   awk 'NF && !seen[$0]++' |
   while IFS= read -r dir; do
+    run=$dir
+    if [ -r "$dir/current-run.txt" ]; then
+      IFS= read -r run < "$dir/current-run.txt" || run=$dir
+      case "$run" in /*) ;; *) run=$dir ;; esac
+    fi
     phase=
-    [ -r "$dir/phase.txt" ] && { IFS= read -r phase < "$dir/phase.txt" || :; }
+    [ -r "$run/phase.txt" ] && { IFS= read -r phase < "$run/phase.txt" || :; }
     pid=$(printf '%s\n' "$launchers" | D=$dir awk -F'\t' '$4 == ENVIRON["D"] { print $1; exit }')
     receipt=
-    [ -r "$dir/queue.out" ] && { IFS= read -r receipt < "$dir/queue.out" || :; }
+    [ -r "$run/queue.out" ] && { IFS= read -r receipt < "$run/queue.out" || :; }
     echo "Launcher state $dir:"
+    if [ -r "$run/run-path.txt" ]; then
+      echo "  run: $run"
+      for field in queued-at started-at handled-at alert; do
+        value=
+        [ -r "$run/$field.txt" ] && { IFS= read -r value < "$run/$field.txt" || :; }
+        case "$field" in
+          queued-at) label='queued at' ;;
+          started-at) label='started acknowledgement' ;;
+          handled-at) label='handled acknowledgement' ;;
+          alert) label=alert ;;
+        esac
+        echo "  $label: ${value:-not recorded}"
+      done
+    fi
     mtime=unknown
     if [ -n "$phase" ]; then
-      mtime=$(date -u -r "$dir/phase.txt" +%Y-%m-%dT%H:%M:%SZ 2> /dev/null) || mtime=unknown
+      mtime=$(date -u -r "$run/phase.txt" +%Y-%m-%dT%H:%M:%SZ 2> /dev/null) || mtime=unknown
       echo "  recorded phase: $phase at $mtime"
     else
       echo '  recorded phase: none'
@@ -151,7 +170,12 @@ entries=
     echo "  receipt: ${receipt:-none}"
     case "$phase:$pid" in
       watching:|queuing:) echo '  note: recorded phase is stale; no launcher process is running' ;;
-      queued:) echo '  note: queued and launcher exited (normal); queued is not read' ;;
+      queued:)
+        if [ -r "$run/run-path.txt" ]; then
+          echo '  note: launcher exited; inspect acknowledgement receipts and alerts'
+        else
+          echo '  note: queued and launcher exited (normal); queued is not read'
+        fi ;;
       queue-outcome-uncertain:*) echo '  note: queue outcome uncertain; inspect queue.out before retrying' ;;
     esac
     if [ "$phase" = queued ]; then

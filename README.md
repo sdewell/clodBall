@@ -116,14 +116,19 @@ including `Ask: none — <note>`: a note after `none` is still none.
 Exit 2 means invalid arguments or an unreadable file.
 
 Codex uses the packaged `scripts/clodball-codex` launcher in its owned
-tmux window. It waits for one wake, queues one check, and exits. The
-completed check saves its read position and re-arms the launcher. The
+tmux window. It waits for one wake, queues one check, and monitors for a
+start acknowledgement for up to five minutes. A missing acknowledgement
+leaves a warning; it never resends. Each launch preserves its receipts,
+including separate `started` and `handled` acknowledgements from the check.
+The completed check saves its read position and re-arms the launcher. The
 skill specifies its arguments and status files; projects need no custom
 watch-and-queue script.
 
 `scripts/clodball-status <absolute handoff path> [<absolute state dir> ...]`
 prints what the files and processes show about a handoff, its watchers,
-and any launcher state directory. It changes nothing.
+and any launcher state directory, including recorded acknowledgements and
+warnings. It changes nothing. A warning identifies a missing acknowledgement,
+not the cause; the Codex thread may still be busy.
 
 ## Check
 
@@ -140,9 +145,12 @@ that arrives between the saved read and re-arming, the omitted
 interval alongside the older four-argument form, and the `bin/`
 forwarding path. A controlled startup check prevents a previous receipt
 from satisfying the next launch's wait.
-The launcher tests use the real watcher and a fake Codex command. They
+The launcher tests use the real watcher, an isolated tmux server, and a fake
+Codex command. They
 check one queued message, failed or unexpected confirmations, and stale
-status cleanup without sending live messages.
+status cleanup, receipt history, and missing or observed acknowledgements
+without sending live messages. A fast-check test replaces the owned tmux
+window while its previous monitor is still sleeping, then verifies re-arming.
 
 ## Where the rest lives
 

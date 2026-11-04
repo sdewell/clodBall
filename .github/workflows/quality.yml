@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Install tmux for launcher integration
+        run: sudo apt-get update && sudo apt-get install --yes tmux
       - name: shellcheck
         run: shellcheck -s sh skills/clodBall/scripts/clodball-watch skills/clodBall/scripts/clodball-codex skills/clodBall/scripts/clodball-status bin/clodball-watch tests/test-watch.sh tests/test-codex.sh tests/test-status.sh
       - name: test

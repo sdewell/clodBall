@@ -10,6 +10,10 @@ cleanup() {
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   fi
+  for child in ${children:-}; do
+    kill "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+  done
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -224,6 +228,20 @@ case "${1:-all}" in
   defaults) defaults ;;
   output) output ;;
   wrapper) wrapper ;;
-  all) baseline; asks; rearm; headings; defaults; output; wrapper ;;
+  all)
+    groups='baseline asks rearm headings defaults output wrapper'
+    children=
+    for group in $groups; do
+      sh "$here/$(basename "$0")" "$group" > "$tmp/$group.log" 2>&1 &
+      children="$children $!"
+    done
+    result=0
+    for child in $children; do
+      if wait "$child"; then :; else result=1; fi
+    done
+    children=
+    for group in $groups; do cat "$tmp/$group.log"; done
+    exit "$result"
+    ;;
   *) echo "FAIL: unknown test: $1"; exit 1 ;;
 esac
