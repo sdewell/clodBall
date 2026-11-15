@@ -65,7 +65,11 @@ minimum and makes a complete kickoff easier to write:
 - **Handoff path**, optional. A line `Handoff: <absolute path>` in the
   project's `PLAN.md` (that file specifically; the skill reads it from
   nowhere else) moves the handoff file away from the default
-  `<main checkout>/.review/HANDOFF.md`.
+  `<main checkout>/.review/HANDOFF.md`. The path must stay inside the
+  main checkout; the skill refuses a path outside it.
+- **End time**, optional and usually absent. A kickoff may carry
+  `Window: <time>` when the user names one; without it, the agents work
+  until the completion check passes or the user stops them.
 
 If the goal or current state is missing, the kickoff's first `Ask:` is
 to update the plan. The kickoff must also carry its completion check,
