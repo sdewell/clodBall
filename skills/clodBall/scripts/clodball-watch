@@ -8,10 +8,15 @@
 # a caller that still passes an interval is accepted unchanged.
 # last-read-line is the newline count of the snapshot the caller handled.
 # The caller treats one stdout line as "run one check". The file is read-only.
+# The line is "clodball: new entry for <agent> in <path>" for an unread peer entry,
+# or "clodball: stall suspected for <agent> in <path> (limit <N> minutes)" when the peer holds the
+# ball and the file has not changed for CLODBALL_STALL_MINUTES (default 25,
+# a positive integer).
 # Exit 2 means invalid arguments, a missing file, or a failed poll.
 set -u
 
 default_interval=30
+stall_minutes=${CLODBALL_STALL_MINUTES:-25}
 agent=${1:-}
 file=${2:-}
 case "$#" in
@@ -29,8 +34,17 @@ case "$interval" in
   *[1-9]*) ;;
   *) echo 'clodball-watch: interval must be a positive integer' >&2; exit 2 ;;
 esac
+case "$stall_minutes" in
+  ''|*[!0-9]*) echo 'clodball-watch: CLODBALL_STALL_MINUTES must be a positive integer' >&2; exit 2 ;;
+  *[1-9]*) ;;
+  *) echo 'clodball-watch: CLODBALL_STALL_MINUTES must be a positive integer' >&2; exit 2 ;;
+esac
 case "$cursor" in
   ''|*[!0-9]*) echo 'clodball-watch: last-read-line must be a nonnegative integer' >&2; exit 2 ;;
+esac
+case "$agent" in
+  claude) peer=cx ;;
+  *) peer=claude ;;
 esac
 if [ ! -f "$file" ]; then
   echo "clodball-watch: no such file: $file" >&2
@@ -70,8 +84,28 @@ pending() {
   ' "$file"
 }
 
+# The last Ball: under a valid entry header, anywhere in the file, names the
+# holder. The file's mtime is used deliberately: the woken agent must append a
+# stall-check entry, which refreshes mtime, so the alarm repeats only after
+# another full silent period. No state file.
+stalled() {
+  # Age first, so the scan runs only past the limit. -H ages a symlinked
+  # handoff by its target, the file awk reads. A failed age query is a
+  # failed poll, not "no stall".
+  aged=$(find -H "$file" -mmin +"$stall_minutes") || return 2
+  [ -n "$aged" ] || return 1
+  holder=$(awk '
+    /^## (claude|cx) → / { valid = ($2 == "claude" || $2 == "cx") && $3 == "→" }
+    valid && /^Ball: / { holder = substr($0, 7); sub(/[[:space:]]+$/, "", holder) }
+    END { print holder }
+  ' "$file") || return 2
+  [ "$holder" = "$peer" ]
+}
+
 while :; do
   if pending; then
+    kind='new entry'
+    suffix=
     break
   else
     status=$?
@@ -80,6 +114,18 @@ while :; do
     echo "clodball-watch: cannot poll $file at last-read-line $cursor" >&2
     exit 2
   fi
+  if stalled; then
+    kind='stall suspected'
+    # The limit travels on the wake line, so a delayed check can re-test it.
+    suffix=" (limit $stall_minutes minutes)"
+    break
+  else
+    status=$?
+  fi
+  if [ "$status" -ne 1 ]; then
+    echo "clodball-watch: cannot poll $file for a stall" >&2
+    exit 2
+  fi
   sleep "$interval" || exit 2
 done
-printf 'clodball: new entry for %s in %s\n' "$agent" "$file"
+printf 'clodball: %s for %s in %s%s\n' "$kind" "$agent" "$file" "$suffix"

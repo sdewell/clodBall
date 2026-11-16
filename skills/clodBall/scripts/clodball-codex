@@ -1,5 +1,5 @@
 #!/bin/sh
-# Queue one check after the packaged watcher wakes; the completed check re-arms.
+# Queue one check after the packaged watcher wakes (new entry or stall suspected); the completed check re-arms.
 # Usage: clodball-codex <thread-uuid> <absolute-handoff> <saved-cursor> <absolute-state-dir>
 #        clodball-codex ack <started|handled> <absolute-run-dir>
 # The caller owns the state directory and prevents overlapping launches.
@@ -92,16 +92,27 @@ else
   exit "$result"
 fi
 printf 'clodball: new entry for cx in %s\n' "$handoff" > "$state_dir/expected-wake.txt"
+check_kind='new entry'
 if ! cmp -s "$state_dir/expected-wake.txt" "$state_dir/wake.out"; then
-  printf '%s\n' invalid-wake-output > "$state_dir/phase.txt"
-  echo "clodball-codex: unexpected watcher output; see $state_dir/wake.out" >&2
-  exit 2
+  # The watcher names its limit on the stall line; carry it into the message
+  # so the delayed check re-tests the limit that fired.
+  IFS= read -r wake_line < "$state_dir/wake.out" || wake_line=
+  stall_minutes=${wake_line##*"(limit "}
+  stall_minutes=${stall_minutes%" minutes)"}
+  case "$stall_minutes" in ''|*[!0-9]*) stall_minutes=0 ;; esac
+  printf 'clodball: stall suspected for cx in %s (limit %s minutes)\n' "$handoff" "$stall_minutes" > "$state_dir/expected-wake.txt"
+  if ! cmp -s "$state_dir/expected-wake.txt" "$state_dir/wake.out"; then
+    printf '%s\n' invalid-wake-output > "$state_dir/phase.txt"
+    echo "clodball-codex: unexpected watcher output; see $state_dir/wake.out" >&2
+    exit 2
+  fi
+  check_kind="stall suspected (limit $stall_minutes minutes)"
 fi
 printf '%s\n' queuing > "$state_dir/phase.txt"
 date -u +%Y-%m-%dT%H:%M:%SZ > "$state_dir/queue-requested-at.txt"
 quoted_launcher=$(shell_quote "$scripts/clodball-codex")
 quoted_run=$(shell_quote "$run_dir")
-message="\$clodBall check: new entry in $handoff
+message="\$clodBall check: $check_kind in $handoff
 Before reading the snapshot, run: $quoted_launcher ack started $quoted_run
 After successfully handling the snapshot and saving its cursor, before re-arming, run: $quoted_launcher ack handled $quoted_run"
 if codex queue --thread "$thread" --message "$message" > "$state_dir/queue.out" 2> "$state_dir/queue.err"; then

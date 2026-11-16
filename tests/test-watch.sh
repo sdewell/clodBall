@@ -62,7 +62,7 @@ wake() {
   fi
   wait "$pid"
   pid=
-  expected="clodball: new entry for $2 in $f"
+  expected=${3:-"clodball: new entry for $2 in $f"}
   if [ "$(cat "$tmp/out")" != "$expected" ] || [ "$(wc -l < "$tmp/out" | tr -d ' ')" != 1 ]; then
     echo "FAIL: unexpected watcher output"
     exit 1
@@ -220,7 +220,138 @@ wrapper() {
   echo 'ok: bin/clodball-watch forwards arguments and exit status to skills/clodBall/scripts/clodball-watch'
 }
 
+stall_file() {
+  # Handled history only: the cursor sits after the appended entries, and the
+  # file is old, so only the stall path can fire.
+  fixture
+  printf '%b' "$1" >> "$f"
+  cursor=$(wc -l < "$f" | tr -d ' ')
+  touch -t 202001010000 "$f"
+}
+
+stall() {
+  stall_file '\n## claude → cx: handed off — 2026-01-01T00:05Z\n\nBall: cx\n'
+  start claude
+  wake 'old file held by cx did not raise a stall for claude' claude "clodball: stall suspected for claude in $f (limit 25 minutes)"
+  echo 'ok: a silent peer holding the ball past the limit wakes once with the stall line'
+
+  stall_file '\n## claude → cx: handed off — 2026-01-01T00:05Z\n\nBall: cx \n'
+  start claude
+  wake 'a trailing space after Ball: cx hid the stall' claude "clodball: stall suspected for claude in $f (limit 25 minutes)"
+  echo 'ok: trailing space after the holder does not hide a stall'
+
+  # A symlinked handoff is aged by its target, the file the scan reads.
+  stall_file '\n## claude → cx: handed off — 2026-01-01T00:05Z\n\nBall: cx\n'
+  touch "$f"
+  ln -s "$f" "$tmp/link.md"
+  touch -h -t 202001010000 "$tmp/link.md"
+  launch claude "$tmp/link.md" 1 "$cursor"
+  quiet 'old symlink to a fresh handoff'
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pid=
+  rm -f "$tmp/link.md"
+  echo 'ok: a symlinked handoff is aged by its target'
+
+  stall_file '\n## claude → cx: handed off — 2026-01-01T00:05Z\n\nBall: cx\n'
+  touch "$f"
+  start claude
+  quiet 'fresh file held by cx'
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pid=
+  echo 'ok: a fresh file stays quiet'
+
+  # A limit longer than the fixture's age (2020) proves the override is used.
+  stall_file '\n## claude → cx: handed off — 2026-01-01T00:05Z\n\nBall: cx\n'
+  export CLODBALL_STALL_MINUTES=99999999
+  start claude
+  quiet 'old file under a longer configured limit'
+  unset CLODBALL_STALL_MINUTES
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pid=
+  echo 'ok: a configured stall limit replaces the default'
+
+  # A failed age query is a failed poll, not "no stall".
+  stall_file '\n## claude → cx: handed off — 2026-01-01T00:05Z\n\nBall: cx\n'
+  touch "$f"
+  mkdir -p "$tmp/badfind"
+  printf '#!/bin/sh\nexit 13\n' > "$tmp/badfind/find"
+  chmod +x "$tmp/badfind/find"
+  saved_path=$PATH
+  PATH="$tmp/badfind:$PATH"
+  launch claude "$f" 1 "$cursor"
+  PATH=$saved_path
+  tries=0
+  while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 5 ]; do
+    sleep 1
+    tries=$((tries + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    echo 'FAIL: a failed age query kept polling'
+    exit 1
+  fi
+  if wait "$pid"; then result=0; else result=$?; fi
+  pid=
+  [ "$result" -eq 2 ] || { echo "FAIL: a failed age query exited $result instead of 2"; exit 1; }
+  echo 'ok: a failed age query exits 2'
+
+  stall_file '\n## cx → claude: handed back — 2026-01-01T00:05Z\n\nBall: claude\n'
+  start cx
+  wake 'old file held by claude did not raise a stall for cx' cx "clodball: stall suspected for cx in $f (limit 25 minutes)"
+  echo 'ok: the stall wake works for cx as well'
+
+  for holder in claude user none; do
+    stall_file "\\n## cx → claude: handed over — 2026-01-01T00:05Z\\n\\nBall: $holder\\n"
+    start claude
+    quiet "old file with Ball: $holder"
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    pid=
+  done
+  echo 'ok: an old file whose last Ball is not the peer stays quiet'
+
+  stall_file '\n## claude → cx: first — 2026-01-01T00:05Z\n\nBall: cx\n\n## claude → cx: later — 2026-01-01T00:10Z\n\nBall: user\n'
+  start claude
+  quiet 'old file whose later entry moved the ball to the user'
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  pid=
+  echo 'ok: only the last Ball counts'
+
+  fixture
+  printf '\n## cx → claude: ask — 2026-01-01T00:05Z\n\nAsk: Claude, inspect this\nBall: cx\n' >> "$f"
+  touch -t 202001010000 "$f"
+  start claude
+  wake 'a pending entry lost priority to the stall alarm' claude
+  echo 'ok: a pending entry still wakes with the normal line when the file is old'
+
+  fixture
+  printf '\n## cx → claude: review — 2026-01-01T00:05Z\n\nBall: claude\n' >> "$f"
+  touch -t 202001010000 "$f"
+  start claude
+  wake 'a pending Ball: claude entry lost priority in an old file' claude
+  echo 'ok: a pending Ball: claude entry wakes normally in an old file'
+
+  stall_file '\n## claude → cx: handed off — 2026-01-01T00:05Z\n\nBall: cx\n'
+  for bad in abc 0 -1 1.5; do
+    if CLODBALL_STALL_MINUTES=$bad "$watch" claude "$f" 1 "$cursor" 2>/dev/null; then
+      echo "FAIL: CLODBALL_STALL_MINUTES=$bad accepted"
+      exit 1
+    else
+      result=$?
+    fi
+    if [ "$result" -ne 2 ]; then
+      echo "FAIL: CLODBALL_STALL_MINUTES=$bad exited $result instead of 2"
+      exit 1
+    fi
+  done
+  echo 'ok: a stall limit that is not a positive integer is refused with exit 2'
+}
+
 case "${1:-all}" in
+  stall) stall ;;
   baseline) baseline ;;
   asks) asks ;;
   rearm) rearm ;;
@@ -229,7 +360,7 @@ case "${1:-all}" in
   output) output ;;
   wrapper) wrapper ;;
   all)
-    groups='baseline asks rearm headings defaults output wrapper'
+    groups='baseline asks rearm headings defaults output wrapper stall'
     children=
     for group in $groups; do
       sh "$here/$(basename "$0")" "$group" > "$tmp/$group.log" 2>&1 &

@@ -11,7 +11,8 @@ Codex, working one project together. Part of the motivation is
 customization: each project decides how the two agents divide the work,
 so it can use the strengths of each model and its harness. It is one
 append-only file per project, one skill both agents read, and one small
-watcher script that wakes an agent when the other hands it the ball.
+watcher script that wakes an agent when the other hands it the ball,
+or when the other has held the ball in silence for 25 minutes.
 The ball is the `Ball:` line every entry carries. Nothing here is a
 lock, a queue, or an
 authority: a peer's entry is a peer's judgment, and the user's word

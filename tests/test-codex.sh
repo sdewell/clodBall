@@ -97,6 +97,27 @@ SH
   echo 'ok: real watcher uses the saved cursor and default interval, queues one exact check, and preserves handoff and cursor'
 }
 
+stall_wake() {
+  fixture stall-wake
+  # Only handled entries, the last one handing the ball to claude, in an old file.
+  printf '\n## cx → claude: handed back — 2000-01-01T00:00:01Z\n\nBall: claude\n' >> "$handoff"
+  cursor=$(wc -l < "$handoff" | tr -d '[:space:]')
+  touch -t 202001010000 "$handoff"
+  # A nondefault limit must reach the delayed check, which may run without it.
+  export CLODBALL_STALL_MINUTES=60
+  run_launcher
+  unset CLODBALL_STALL_MINUTES
+  [ "$launch_status" -eq 0 ] || fail "stall wake exited $launch_status: $(cat "$case_dir/stderr")"
+  [ "$(cat "$state_dir/phase.txt")" = queued ] || fail 'stall wake is not marked queued'
+  [ "$(cat "$case_dir/calls")" = call ] || fail 'stall wake did not queue exactly once'
+  # The queued message is the normal one with only its first line reworded.
+  expected_args "$thread"
+  sed "s/^\\\$clodBall check: new entry in /\\\$clodBall check: stall suspected (limit 60 minutes) in /" "$case_dir/expected-args" > "$case_dir/expected-stall-args"
+  ! cmp -s "$case_dir/expected-args" "$case_dir/expected-stall-args" || fail 'stall expectation was not derived'
+  cmp -s "$case_dir/expected-stall-args" "$case_dir/args" || fail 'stall wake queued the wrong message'
+  echo 'ok: a stall wake is accepted and queues the normal check with a stall first line'
+}
+
 watcher_failure() {
   fixture watcher-failure
   rm "$handoff"
@@ -449,6 +470,7 @@ invalid_rearm() {
 
 case "${1:-all}" in
   success) success ;;
+  stall-wake) stall_wake ;;
   watcher-failure) watcher_failure ;;
   watcher-receipt) watcher_receipt ;;
   queue-failure) queue_failure ;;
@@ -462,6 +484,6 @@ case "${1:-all}" in
   uppercase-thread) uppercase_thread ;;
   unexpected-poll) unexpected_poll ;;
   invalid-rearm) invalid_rearm ;;
-  all) success; watcher_failure; watcher_receipt; queue_failure; queue_receipt; state_reuse; acknowledgements; uncertain_acknowledgements; watchdog; tmux_rearm; invalid_thread; uppercase_thread; unexpected_poll; invalid_rearm ;;
+  all) success; stall_wake; watcher_failure; watcher_receipt; queue_failure; queue_receipt; state_reuse; acknowledgements; uncertain_acknowledgements; watchdog; tmux_rearm; invalid_thread; uppercase_thread; unexpected_poll; invalid_rearm ;;
   *) fail "unknown test: $1" ;;
 esac

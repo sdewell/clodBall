@@ -1,6 +1,6 @@
 ---
 name: clodBall
-description: Coordinate Claude and Codex through the project's shared handoff file. In Claude, /clodBall starts it (one check, then a free background watcher) and /clodBall stop stops it. In Codex, $clodBall starts it, $clodBall check is one check, $clodBall stop stops it. No model call while nothing changed.
+description: Coordinate Claude and Codex through the project's shared handoff file. In Claude, /clodBall starts it (one check, then a free background watcher) and /clodBall stop stops it. In Codex, $clodBall starts it, $clodBall check is one check, $clodBall stop stops it. No model call while nothing changed, except one wake for a suspected stall.
 ---
 
 # Peer handoff — Claude and Codex working one project in concert
@@ -180,7 +180,8 @@ These receipts record the check's progress; they do not close handoff requests.
    acknowledgement first (`Done: started <title>`, `Ball:` you), so the
    peer does not re-ask.
 4. Nothing new for you: say "no change" in your session and append
-   **nothing**. Unchanged checks are silent in the file.
+   **nothing**. Unchanged checks are silent in the file. The one
+   exception is a stall wake that is still current (**The timer**).
 5. After handling the snapshot, retain its complete line count as your
    cursor. If the collaboration remains open, re-arm an owned watcher
    with that value. Never count the live file after replying: that would
@@ -229,6 +230,44 @@ An Ask uses the entry header's recipient or an explicit leading
 entries do not wake it. The check determines whether a later reply
 already closed an Ask.
 
+The watcher also wakes once when the newest `Ball:` line names the
+peer and the file's modification time is more than 25 minutes old
+(`CLODBALL_STALL_MINUTES` overrides this; set it on every arm and
+re-arm, or the next watcher uses 25). A silent peer and a busy
+peer look the same from the file, so this is a suspected stall, not
+proof of one. On that wake, run one check; it handles the snapshot as
+usual, so a `Ball:` or `Ask:` for you still gets its reply. A queued
+wake can arrive late, so first apply any ending (a `closed — confirmed`
+entry, the user's stop, or a passed `Window:`; **Ending** below), then
+re-test the condition: if the snapshot's newest `Ball:` no longer names
+the peer, or the live file's modification time is now within the limit
+the wake line names (`(limit N minutes)`; the Codex launcher copies it
+into the queued check), the wake is stale: write no `stall check`.
+Otherwise append exactly one entry titled `stall check`, `Ball:` the
+peer: in `Done:`, the peer's last entry and what you can observe of
+its named job or artifacts; in `Ask:`, a request for its status. If
+your previous entry is already a `stall check` with no peer entry since,
+send `Ball: user` instead, with the open question and a default. The
+append changes the file, so the alarm repeats only after another
+silent period, and `Ball: user` ends it. Never take over the peer's
+work on this wake.
+
+The file's modification time is not proof of activity. A `touch`, an
+editor save, or a copy resets it without progress, and a wrong clock
+moves it. Change the live handoff only by appending. The alarm depends
+on the other agent's watcher running and its host handling the wake.
+
+The alarm detects the silence a stuck private wait causes; it cannot
+interrupt or repair that wait, so the waiting agent prevents it. Wait
+for a background job by its exact process or session identifier, or by
+a completion file the job writes, never by a name or pattern search
+that can match the waiting command itself. A tmux session name is
+matched exactly and quoted, because zsh expands an unquoted `=name`:
+`tmux has-session -t '=job-name'`. Give every wait a deadline,
+and on the deadline report in the handoff instead of waiting again. A
+long job's holder posts a short progress entry at least every 25
+minutes.
+
 The watcher is `scripts/clodball-watch` in this skill's directory (the
 directory that holds this SKILL.md). Three arguments: the agent, the
 handoff path, and the cursor, a nonnegative line number. Omit the
@@ -247,7 +286,10 @@ still passing an interval adopts the three-argument form with
 cursor (**The check**, step 1), so nothing is skipped.
 
 It prints one line, `clodball: new entry for <agent> in <path>`, and
-exits 0 when an unread peer field needs a check. It scans immediately,
+exits 0 when an unread peer field needs a check. On a suspected stall
+it prints `clodball: stall suspected for <agent> in <path> (limit <N> minutes)`
+and exits 0;
+a new entry takes priority over a stall. It scans immediately,
 so an entry appended between the snapshot and re-arming still wakes it.
 Exit 2 means invalid arguments or an unreadable handoff file.
 
@@ -279,7 +321,8 @@ would wake again on the same entry. Keep that delay cancellable by stop.
   Resolve the script from this skill's directory. Keep `codex` on PATH
   and use a state directory owned by this session, with no overlapping
   launch. The launcher uses the watcher's default interval, validates
-  its wake, queues exactly one check, validates Codex's confirmation,
+  its wake (a new entry or a suspected stall, named in the queued
+  message), queues exactly one check, validates Codex's confirmation,
   then monitors for `started` for up to five minutes without a model call.
   A missing acknowledgement produces `alert.txt` and a terminal warning;
   it never resends. A busy thread can exceed this window without a stall.
