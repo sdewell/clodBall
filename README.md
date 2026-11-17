@@ -12,7 +12,7 @@ customization: each project decides how the two agents divide the work,
 so it can use the strengths of each model and its harness. It is one
 append-only file per project, one skill both agents read, and one small
 watcher script that wakes an agent when the other hands it the ball,
-or when the other has held the ball in silence for 25 minutes.
+or when the other has held the ball in silence for more than 25 minutes.
 The ball is the `Ball:` line every entry carries. Nothing here is a
 lock, a queue, or an
 authority: a peer's entry is a peer's judgment, and the user's word
@@ -80,9 +80,10 @@ work lands; a goal change is a new kickoff entry.
 
 ## Requirements
 
-- macOS or Linux. The watcher and its tests are POSIX `sh` with `awk`
-  and `sleep`; the repo's workflow runs them on Ubuntu, and the skill is
-  developed and used on macOS. Windows is untested: the watcher needs a
+- macOS or Linux. The watcher and its tests use POSIX `sh`, `awk`,
+  `sleep`, and `find` with `-H` and `-mmin`. The repo's workflow runs them
+  on Ubuntu, and the skill is developed and used on macOS.
+  Windows is untested: the watcher needs a
   POSIX shell (Git Bash or WSL), and skill discovery there is not
   covered here.
 - Claude Code that can run a Bash job in the background; the watcher
@@ -116,9 +117,20 @@ place. The skill gives the full procedure.
 
 The watcher prints one line and exits for an unread peer `Ball: claude`,
 `Ball: none`, or Ask addressed to Claude, even with `Ball: cx`.
-Own entries and `Ask: none` progress with the ball elsewhere stay quiet,
-including `Ask: none — <note>`: a note after `none` is still none.
-Exit 2 means invalid arguments or an unreadable file.
+Own entries and `Ask: none` progress with the ball elsewhere do not
+trigger entry wakes, including `Ask: none — <note>`: a note after
+`none` is still none.
+
+The watcher also checks for silence. If the newest `Ball:` names the
+peer and the handoff file has not changed for more than 25 minutes,
+it prints `clodball: stall suspected for <agent> in <path> (limit <N> minutes)`
+and exits. `CLODBALL_STALL_MINUTES` changes the limit; set it on every
+arm and re-arm. The woken agent rechecks the condition and asks the peer
+for status in a `stall check` entry if the alarm is still current.
+A second unanswered check goes to `Ball: user`. This detects silence;
+it does not prove a stall or repair the peer's wait. The skill gives
+the revalidation and ending rules. Exit 2 means invalid arguments,
+an unreadable file, or a failed poll.
 
 Codex uses the packaged `scripts/clodball-codex` launcher in its owned
 tmux window. It waits for one wake, queues one check, and monitors for a
@@ -145,14 +157,16 @@ sh tests/test-status.sh
 ```
 
 The tests exercise the script directly: quiet progress and own entries,
-ball transfers and closure, an Ask with the ball elsewhere, an entry
+ball transfers and closure, silence alarms and custom limits, symlink
+target age, failed age queries, an Ask with the ball elsewhere, an entry
 that arrives between the saved read and re-arming, the omitted
 interval alongside the older four-argument form, and the `bin/`
 forwarding path. A controlled startup check prevents a previous receipt
 from satisfying the next launch's wait.
 The launcher tests use the real watcher, an isolated tmux server, and a fake
 Codex command. They
-check one queued message, failed or unexpected confirmations, and stale
+check one queued message with the stall limit when applicable,
+failed or unexpected confirmations, and stale
 status cleanup, receipt history, and missing or observed acknowledgements
 without sending live messages. A fast-check test replaces the owned tmux
 window while its previous monitor is still sleeping, then verifies re-arming.
